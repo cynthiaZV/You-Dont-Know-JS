@@ -78,7 +78,7 @@ Even values like `"   "` (string with only whitespace), `[]` (empty array), and 
 
 | WARNING: |
 | :--- |
-| There *are* narrow, tricky exceptions to this truthy rule. For example, the web platform has deprecated the long-standing `document.all` collection/array feature, though it cannot be removed entirely -- that would break too many sites. Even where `document.all` is still defined, it behaves as a "falsy object" that coerces to `false`; that means legacy conditional checks like `if (document.all) { .. }` no longer pass. |
+| There *are* narrow, tricky exceptions to this truthy rule. For example, the web platform has deprecated the long-standing `document.all` collection/array feature, though it cannot be removed entirely -- that would break too many sites. Even where `document.all` is still defined, it behaves as a "falsy object"[^ExoticFalsyObjects] -- `undefined` which then coerces to `false`; this means legacy conditional checks like `if (document.all) { .. }` no longer pass. |
 
 The `ToBoolean()` coercion operation is basically a lookup table rather than an algorithm of steps to use in coercions a non-boolean to a boolean. Thus, some developers assert that this isn't *really* coercion the way other abstract coercion operations are. I think that's bogus. `ToBoolean()` converts from non-boolean value-types to a boolean, and that's clear cut type coercion (even if it's a very simple lookup instead of an algorithm).
 
@@ -96,7 +96,7 @@ ToPrimitive({ a: 1 },"string");          // "[object Object]"
 ToPrimitive({ a: 1 },"number");          // NaN
 ```
 
-The `ToPrimitive()` operation will look on the object provided, for either a `toString()` method or a `valueOf()` method; the order it looks for those is controlled by the *hint*.
+The `ToPrimitive()` operation will look on the object provided, for either a `toString()` method or a `valueOf()` method; the order it looks for those is controlled by the *hint*. `"string"` means check in `toString()` / `valueOf()` order, whereas `"number"` (or no *hint*) means check in `valueOf()` / `toString()` order.
 
 If the method returns a value matching the *hinted* type, the operation is finished. But if the method doesn't return a value of the *hinted* type, `ToPrimitive()` will then look for and invoke the other method (if found).
 
@@ -476,10 +476,6 @@ My take: `Boolean(..)` is the most preferable *explicit* coercion form. Further,
 
 Since most developers, including famous names like Doug Crockford, also in practice use implicit (`boolean`) coercions in their `if`[^CrockfordIfs] and loop statements, I think we can say that at least *some forms* of *implicit* coercion are widely acceptable, regardless of the rhetoric to the contrary.
 
-### To Primitive
-
-// TODO
-
 ### To String
 
 As with `ToBoolean()`, there are a number of ways to activate the `ToString()` coercion (as discussed earlier in the chapter). The decision of which approach is similarly subjective.
@@ -555,6 +551,10 @@ undefined + "";                 // "undefined"
 
 The `+ ""` idiom for string coercion takes advantage of the `+` overloading, without altering the final coerced string value. By the way, all of these work the same with the operands reversed (i.e., `"" + ..`).
 
+| WARNING: |
+| :--- |
+| An extremely common misconception is that `String(x)` and `x + ""` are basically equivalent coercions, respectively just *explicit* vs *implicit* in form. But, that's not quite true! We'll revisit this in the "To Primitive" section later in this chapter. |
+
 Some feel this is an *explicit* coercion, but I think it's clearly more *implicit*, in that it's taking advantage of the `+` overloading; further, the `""` is indirectly used to activate the coercion without modifying it. Moreover, consider what happens when this idiom is applied with a symbol value:
 
 ```js
@@ -571,9 +571,573 @@ Nevertheless, as I mentioned at the start of this chapter, Brendan Eich endorses
 
 ### To Number
 
-// TODO
+Numeric coercions are a bit more complicated than string coercions, since we can be talking about either `number` or `bigint` as the target type. There's also a much smaller set of values that can be validly represented numerically (everything else becomes `NaN`).
 
-### Nullish
+Let's start with the `Number(..)` and `BigInt(..)` functions (no `new` keywords):
+
+```js
+Number("42");                   // 42
+Number("-3.141596");            // -3.141596
+Number("-0");                   // -0
+
+BigInt("42");                   // 42n
+BigInt("-0");                   // 0n
+```
+
+`Number` coercion which fails (not recognized) results in `NaN` (see "Invalid Number" in Chapter 1), whereas `BigInt` throws an exception:
+
+```js
+Number("123px");                // NaN
+
+BigInt("123px");
+// SyntaxError: Cannot convert 123px to a BigInt
+```
+
+Moreover, even though `42n` is valid syntax as a literal `bigint`, the string `"42n"` is never a recognized string representation of a `bigint`, by either of the coercive function forms:
+
+```js
+Number("42n");                  // NaN
+
+BigInt("42n");
+// SyntaxError: Cannot convert 42n to a BigInt
+```
+
+However, we *can* coerce numeric strings with other representations of the numbers than typical base-10 decimals (see Chapter 1 for more information):
+
+```js
+Number("0b101010");             // 42
+
+BigInt("0b101010");             // 42n
+```
+
+Typically, `Number(..)` and `BigInt(..)` receive string values, but that's not actually required. For example, `true` and `false` coerce to their typical numeric equivalents:
+
+```js
+Number(true);                   // 1
+Number(false);                  // 0
+
+BigInt(true);                   // 1n
+BigInt(false);                  // 0n
+```
+
+You can also generally coerce between `number` and `bigint` types:
+
+```js
+Number(42n);                    // 42
+Number(42n ** 1000n);           // Infinity
+
+BigInt(42);                     // 42n
+```
+
+We can also use the `+` unary operator, which is commonly assumed to coerce the same as the `Number(..)` function:
+
+```js
++"42";                          // 42
++"0b101010";                    // 42
+```
+
+Be careful though. If the coercions are unsafe/invalid in certain ways, exceptions are thrown:
+
+```js
+BigInt(3.141596);
+// RangeError: The number 3.141596 cannot be converted to a BigInt
+
++42n;
+// TypeError: Cannot convert a BigInt value to a number
+```
+
+Clearly, `3.141596` does not safely coerce to an integer, let alone a `bigint`.
+
+But `+42n` throwing an exception is an interesting case. By contrast, `Number(42n)` works fine, so it's a bit surprising that `+42n` fails.
+
+| WARNING: |
+| :--- |
+| That surprise is especially palpable since prepending a `+` in front of a number is typically assumed to just mean a "positive number", the same way `-` in front a number is assumed to mean a "negative number". As explained in Chapter 1, however, JS numeric syntax (`number` and `bigint`) recognize no syntax for "negative values". All numeric literals are parsed as "positive" by default. If a `+` or `-` is prepended, those are treated as unary operators applied against the parsed (positive) number. |
+
+OK, so `+42n` is parsed as `+(42n)`. But still... why is `+` throwing an exception here?
+
+You might recall earlier when we showed that JS allows *explicit* string coercion of symbol values, but disallows *implicit* string coercions? The same thing is going on here. JS language design interprets unary `+` in front of a `bigint` value as an *implicit* `ToNumber()` coercion (thus disallowed!), but `Number(..)` is interpreted as an *explicit* `ToNumber()` coercion (thus allowed!).
+
+In other words, contrary to popular assumption/assertion, `Number(..)` and `+` are not interchangable. I think `Number(..)` is the safer/more reliable form.
+
+Like string coercions, if you perform a numeric coercion on a non-primitive object value, the `ToPrimitive()` operation is activated to first turn it into some primitive value
+
+### To Primitive
+
+Most operators in JS, including those we've see with coercions to `string` and `number`, are designed to run against primitive values. When any of these operators is used instead against an object value, the abstract `ToPrimitive` algorithm (as described earlier) is activated to coerce the object to a primitive.
+
+Let's set up an object we can use to inspect how different operations behave:
+
+```js
+spyObject = {
+    toString() {
+        console.log("toString() invoked!");
+        return "10";
+    },
+    valueOf() {
+        console.log("valueOf() invoked!");
+        return 42;
+    },
+};
+```
+
+This object defines both the `toString()` and `valueOf()` methods, and each one returns a different type of value (`string` vs `number`).
+
+Let's try some of the coercion operations we've already seen:
+
+```js
+String(spyObject);
+// toString() invoked!
+// "10"
+
+spyObject + "";
+// valueOf() invoked!
+// "42"
+```
+
+Whoa! I bet that surprised a few of you readers; it certainly did me. It's so common for people to assert that `String(..)` and `+ ""` are equivalent forms of activating the `ToString()` operation. But they're clearly not!
+
+The difference comes down to the *hint* that each operation provides to `ToPrimitive()`. `String(..)` clearly provides `"string"` as the *hint*, whereas the `+ ""` idiom provides no *hint* (similar to *hinting* `"number"`). But don't miss this detail: even though `+ ""` invokes `valueOf()`, when that returns a `number` primitive value of `42`, that value is then coerced to a string (via `ToString()`), so we get `"42"` instead of `42`.
+
+Let's keep going:
+
+```js
+Number(spyObject);
+// valueOf() invoked!
+// 42
+
++spyObject;
+// valueOf() invoked!
+// 42
+```
+
+This example implies that `Number(..)` and the unary `+` operator both perform the same `ToPrimitive()` coercion (with *hint* of `"number"`), which in our case returns `42`. Since that's already a `number` as requested, the value comes out without further ado.
+
+But what if a `valueOf()` returns a `bigint`?
+
+```js
+spyObject2 = {
+    valueOf() {
+        console.log("valueOf() invoked!");
+        return 42n;  // bigint!
+    }
+};
+
+Number(spyObject2);
+// valueOf() invoked!
+// 42     <--- look, not a bigint!
+
++spyObject2;
+// valueOf() invoked!
+// TypeError: Cannot convert a BigInt value to a number
+```
+
+We saw this difference earlier in the "To Number" section. JS allows an *explicit* coercion of the `42n` bigint value to the `42` number value, but it disallows what it considers to be an *implicit* coercion form.
+
+What about the `BigInt(..)` (no `new` keyword) coercion function?
+
+```js
+BigInt(spyObject);
+// valueOf() invoked!
+// 42n    <--- look, a bigint!
+
+BigInt(spyObject2);
+// valueOf() invoked!
+// 42n
+
+// *******************************
+
+spyObject3 = {
+    valueOf() {
+        console.log("valueOf() invoked!");
+        return 42.3;
+    }
+};
+
+BigInt(spyObject3);
+// valueOf() invoked!
+// RangeError: The number 42.3 cannot be converted to a BigInt
+```
+
+Again, as we saw in the "To Number" section, `42` can safely be coerced to `42n`. On the other hand, `42.3` cannot safely be coerced to a `bigint`.
+
+We've seen that `toString()` and `valueOf()` are invoked, variously, as certain `string` and `number` / `bigint` coercions are performed.
+
+#### No Primitive Found?
+
+If `ToPrimitive()` fails to produce a primitive value, an exception will be thrown:
+
+```js
+spyObject4 = {
+    toString() {
+        console.log("toString() invoked!");
+        return [];
+    },
+    valueOf() {
+        console.log("valueOf() invoked!");
+        return {};
+    }
+};
+
+String(spyObject4);
+// toString() invoked!
+// valueOf() invoked!
+// TypeError: Cannot convert object to primitive value
+
+Number(spyObject4);
+// valueOf() invoked!
+// toString() invoked!
+// TypeError: Cannot convert object to primitive value
+```
+
+If you're going to define custom to-primitive coercions via `toString()` / `valueOf()`, make sure to return a primitive from at least one of them!
+
+#### Object To Boolean
+
+What about `boolean` coercions of objects?
+
+```js
+Boolean(spyObject);
+// true
+
+!spyObject;
+// false
+
+if (spyObject) {
+    console.log("if!");
+}
+// if!
+
+result = spyObject ? "ternary!" : "nope";
+// "ternary!"
+
+while (spyObject) {
+    console.log("while!");
+    break;
+}
+// while!
+```
+
+Each of these are activating `ToBoolean()`. But if you recall from earlier, *that* algorithm never delegates to `ToPrimitive()`; thus, we don't see "valueOf() invoked!" being logged out.
+
+#### Unboxing: Wrapper To Primitive
+
+A special form of objects that are often `ToPrimitive()` coerced: boxed/wrapped primitives (as seen in Chapter 3). This particular object-to-primitive coercion is often referred to as *unboxing*.
+
+Consider:
+
+```js
+hello = new String("hello");
+String(hello);                  // "hello"
+hello + "";                     // "hello"
+
+fortyOne = new Number(41);
+Number(fortyOne);               // 41
+fortyOne + 1;                   // 42
+```
+
+The object wrappers `hello` and `fortyOne` above have `toString()` and `valueOf()` methods configured on them, to behave similarly to the `spyObject` / etc objects from our previous examples.
+
+A special case to be careful of with wrapped-object primitives is with `Boolean()`:
+
+```js
+nope = new Boolean(false);
+Boolean(nope);                  // true   <--- oops!
+!!nope;                         // true   <--- oops!
+```
+
+Remember, this is because `ToBoolean()` does *not* reduce an object to its primitive form with `ToPrimitive`; it merely looks up the value in its internal table, and since normal (non-exotic[^ExoticFalsyObjects]) objects are always truthy, `true` comes out.
+
+| NOTE: |
+| :--- |
+| It's a nasty little gotcha. A case could certainly be made that `new Boolean(false)` should configure itself internally as an exotic "falsy object". [^ExoticFalsyObjects] Unfortunately, that change now, 25 years into JS's history, could easily create breakage in programs. As such, JS has left this gotcha untouched. |
+
+#### Overriding Default `toString()`
+
+As we've seen, you can always define a `toString()` on an object to have *it* invoked by the appropriate `ToPrimitive()` coercion. But another option is to override the `Symbol.toStringTag`:
+
+```js
+spyObject5a = {};
+String(spyObject5a);
+// "[object Object]"
+spyObject5a.toString();
+// "[object Object]"
+
+spyObject5b = {
+    [Symbol.toStringTag]: "my-spy-object"
+};
+String(spyObject5b);
+// "[object my-spy-object]"
+spyObject5b.toString();
+// "[object my-spy-object]"
+
+spyObject5c = {
+    get [Symbol.toStringTag]() {
+        return `myValue:${this.myValue}`;
+    },
+    myValue: 42
+};
+String(spyObject5c);
+// "[object myValue:42]"
+spyObject5c.toString();
+// "[object myValue:42]"
+```
+
+`Symbol.toStringTag` is intended to define a custom string value to describe the object whenever its default `toString()` operation is invoked directly, or implicitly via coercion; in its absence, the value used is `"Object"` in the common `"[object Object]"` output.
+
+The `get ..` syntax in `spyObject5c` is defining a *getter*. That means when JS tries to access this `Symbol.toStringTag` as a property (as normal), this gettter code instead causes the function we specify to be invoked to compute the result. We can run any arbitrary logic inside this getter to dynamically determine a string *tag* for use by the default `toString()` method.
+
+#### Overriding `ToPrimitive`
+
+You can alternately override the whole default `ToPrimitive()` operation for any object, by setting the special symbol property `Symbol.toPrimitive` to hold a function:
+
+```js
+spyObject6 = {
+    [Symbol.toPrimitive](hint) {
+        console.log(`toPrimitive(${hint}) invoked!`);
+        return 25;
+    },
+    toString() {
+        console.log("toString() invoked!");
+        return "10";
+    },
+    valueOf() {
+        console.log("valueOf() invoked!");
+        return 42;
+    },
+};
+
+String(spyObject6);
+// toPrimitive(string) invoked!
+// "25"   <--- not "10"
+
+spyObject6 + "";
+// toPrimitive(default) invoked!
+// "25"   <--- not "42"
+
+Number(spyObject6);
+// toPrimitive(number) invoked!
+// 25     <--- not 42 or "25"
+
++spyObject6;
+// toPrimitive(number) invoked!
+// 25
+```
+
+As you can see, if you define this function on an object, it's used entirely in replacement of the default `ToPrimitive()` abstract operation. Since `hint` is still provided to this invoked function (`[Symbol.toPrimitive](..)`), you could in theory implement your own version of the algorithm, invoking a `toString()`, `valueOf()`, or any other method on the object (`this` context reference).
+
+Or you can just manually define a return value as shown above. Regardless, JS will *not* automatically invoke either `toString()` or `valueOf()` methods.
+
+| WARNING: |
+| :--- |
+| As discussed prior in "No Primitive Found?", if the defined `Symbol.toPrimitive` function does not actually return a value that's a primitive, an exception will be thrown about being unable to "...convert object to primitive value". Make sure to always return an actual primitive value from such a function! |
+
+### Equality
+
+Thus far, the coercions we've seen have been focused on single values. We turn out attention now to equality comparisons, which inherently involve two values, either or both of which may be subject to coercion.
+
+Earlier in this chapter, we talked about several abstract operations for value equality comparison.
+
+For example, the `SameValue()` operation[^SameValue] is the strictest of the equality comparisons, with absolutely no coercion. The most obvious JS operation that relies on `SameValue()` is:
+
+```js
+Object.is(42,42);                   // true
+Object.is(-0,-0);                   // true
+Object.is(NaN,NaN);                 // true
+
+Object.is(0,-0);                    // false
+```
+
+The `SameValueZero()` operation -- recall, it only differs from `SameValue()` by treating `-0` and `0` as indistinguishable -- is used in quite a few more places, including:
+
+```js
+[ 1, 2, NaN ].includes(NaN);        // true
+```
+
+We can see the `0` / `-0` misdirection of `SameValueZero()` here:
+
+```js
+[ 1, 2, -0 ].includes(0);           // true  <--- oops!
+
+(new Set([ 1, 2, 0 ])).has(-0);     // true  <--- ugh
+
+(new Map([[ 0, "ok" ]])).has(-0);   // true  <--- :(
+```
+
+In these cases, there's a *coercion* (of sorts!) that treats `-0` and `0` as indistinguishable. No, that's not technically a "coercion" in that the type is not being changed, but I'm sort of fudging the definition to *include* this case in our broader discussion of coercion here.
+
+Contrast the `includes()` / `has()` methods here, which activate `SameValueZero()`, with the good ol' `indexOf(..)` array utility, which instead activates `IsStrictlyEqual()` instead. This algorithm is slightly more "coercive" than `SameValueZero()`, in that it prevents `NaN` values from ever being treated as equal to each other:
+
+```js
+[ 1, 2, NaN ].indexOf(NaN);         // -1  <--- not found
+```
+
+If these nuanced quirks of `includes(..)` and `indexOf(..)` bother you, when searching -- looking for an equality match within -- for a value in an array, you can avoid any "coercive" quicks and *force* the strictest `SameValue()` equality matching, via `Object.is(..)`:
+
+```js
+vals = [ 0, 1, 2, -0, NaN ];
+
+vals.find(v => Object.is(v,-0));            // -0
+vals.find(v => Object.is(v,NaN));           // NaN
+
+vals.findIndex(v => Object.is(v,-0));       // 3
+vals.findIndex(v => Object.is(v,NaN));      // 4
+```
+
+#### Equality Operators: `==` vs `===`
+
+The most obvious place where *coercion* is involved in equality checks is with the `==` operator. Despite any pre-conceived notions you may have about `==`, it behaves extremely predictably, ensuring that both operands match types before performing its equality check.
+
+Recall and review the steps discussed earlier in the chapter for the `IsLooselyEqual()` operation. [^LooseEquality] Its behavior, and thus how `==` acts, can be pragmatically intuited with just these two facts in mind:
+
+1. If the types of both operands are the same, `==` has the exact same behavior as `===` -- `IsLooselyEqual()` immediately delegates to `IsStrictlyEqual()`. [^StrictEquality]
+
+    For example, when both operands are object references:
+
+    ```js
+    myObj = { a: 1 };
+    anotherObj = myObj;
+
+    myObj == anotherObj;                // true
+    myObj === anotherObj;               // true
+    ```
+
+    Here, `==` and `===` determine that both of their respective operands are of the `object` reference type, so both equality checks behave identically; they compare the object references for equality.
+
+2. But if the operand types differ, `==` allows coercion until they match, and prefers numeric comparison; it attempts to coerce both operands to numbers, if possible:
+
+    ```js
+    42 == "42";                         // true
+    ```
+
+    Here, the `"42"` string is coerced to a `42` number (not vice versa), and thus the comparison is then `42 == 42`, and must clearly return `true`.
+
+
+Armed with this knowledge, we'll now dispell the common myth that only `===` checks the type and value, while `==` checks only the value. Not true!
+
+In fact, `==` and `===` are both type-sensitive, each checking the types of their operands. The `==` operator allows coercion of mismatched types, whereas `===` disallows any coercion.
+
+It's a nearly universally held opinion that `==` should be avoided in favor of `===`. I may be one of the only developers who publicly advocates a clear and straight-faced case for the opposite. I think the main reason people instead prefer `===`, beyond simply conforming to the status quo, is a lack of taking the time to actually understand `==`.
+
+I'll be revisiting this topic to make the case for preferring `==` over `===`, later in this chapter. All I ask is, no matter how strongly you currently disagree with me, try to keep an open mindset.
+
+#### Nullish Coercion
+
+We've already seen a number of JS operations that are nullish -- treating `null` and `undefined` as coercively equal to each other, including the `?.` optional-chaining operator and the `??` nullish-coalescing operator (see "Null'ish" in Chapter 1).
+
+But `==` is the most obvious place that JS exposes nullish coercive equality:
+
+```js
+null == undefined;              // true
+```
+
+Neither `null` nor `undefined` will ever be coercively equal to any other value in the language, other than to each other. That means `==` makes it ergonomic to treat these two values as indistinguishable.
+
+You might take advantage of this capability as such:
+
+```js
+if (someData == null) {
+    // `someData` is "unset" (either null or undefined),
+    // so set it to some default value
+}
+
+// OR:
+
+if (someData != null) {
+    // `someData` is set (neither null nor undefined),
+    // so use it somehow
+}
+```
+
+Remember that `!=` is the negation of `==`, whereas `!==` is the negation of `===`. Don't match the count of `=`s unless you want to confuse yourself!
+
+Compare these two approaches:
+
+```js
+if (someData == null) {
+    // ..
+}
+
+// vs:
+
+if (someData === null || someData === undefined) {
+    // ..
+}
+```
+
+Both `if` statements will behave exactly identically. Which one would you rather write, and which one would you rather read later?
+
+To be fair, some of you prefer the more verbose `===` equivalent. And that's OK. I disagree, I think the `==` version of this check is *much* better. And I also maintain that the `==` version is more consistent in stylistic spirit with how the other nullish operators like `?.` and `??` act.
+
+But another minor fact you might consider: in performance benchmarks I've run many times, JS engines can perform the single `== null` check as shown *slightly faster* than the combination of two `===` checks. In other words, there's a tiny but measurable benefit to letting JS's `==` perform the *implicit* nullish coercion than in trying to *explicitly* list out both checks yourself.
+
+I'd observe that even many diehard `===` fans tend to concede that `== null` is at least one such case where `==` is preferable.
+
+## Coercion Corner Cases
+
+I've been clear in expressing my pro-coercion opinion thus far. And it *is* just an opinion, though it's based on interpreting facts gleaned from studying the language specification and observable JS behaviors.
+
+That's not to say that coercion is perfect. There's several frustrating corner cases we need to be aware of, so we avoid tripping into those potholes. In case it's not clear, my following characterizations of these corner cases are just more of my opinions. Your mileage may vary.
+
+### Strings
+
+We already saw that the string coercion of an array looks like this:
+
+```js
+String([ 1, 2, 3 ]);                // "1,2,3"
+```
+
+I personally find that super annoying, that it doesn't include the surrounding `[ ]`. In particular, that leads to this absurdity:
+
+```js
+String([]);                         // ""
+```
+
+So we can't tell that it's even an array, because all we get is an empty string? Great, JS. That's just stupid. Sorry, but it is. And it gets worse:
+
+```js
+String([ null, undefined ]);        // ","
+```
+
+WAT!? We know that `null` coerces to the string `"null"`, and `undefined` coerces to the string `"undefined"`. But if those values are in an array, they magically just *disappear* as empty strings in the array-to-string coercion. Only the `","` remains to even hint to us there was anything at all in the array! That's just silly town, right there.
+
+What about objects? Almost as aggravating, though in the opposite direction:
+
+```js
+String({});                         // "[object Object]"
+
+String({ a: 1 });                   // "[object Object]"
+```
+
+Umm... OK. Sure, thanks JS for no help at all in understanding what the object value is.
+
+### Numbers
+
+I'm about to reveal what I think is *the* worst root of all coercion corner case evil. Are you ready for it?!?
+
+```js
+Number("");                         // 0
+Number("       ");                  // 0
+```
+
+I'm still shaking my head at this one, and I've known about it for nearly 20 years. I still don't get what Brendan was thinking with this one.
+
+The empty string is devoid of any contents; it has nothing in it with which to determine a numeric representation. `0` is absolutely ***NOT*** the numeric equivalent of missing/invalid numeric value. You know what number value we have that is well-suited to communicate that? `NaN`. Don't even get me started on how whitespace is stripped from strings when coercing to a number, so the very-much-not-empty `"       "` string is still treated the same as `""` for numeric coercion purposes.
+
+This is absurd, upside-down universe territory.
+
+Much more tame, but still mildly annoying:
+
+```js
+Number("NaN");                      // NaN  <--- accidental!
+
+Number("Infinity");                 // Infinity
+Number("infinity");                 // NaN  <--- oops, watch case!
+```
+
+The string `"NaN"` is not parsed as a recognizable numeric value, so the coercion fails, producing (accidentally!) the `NaN` value. `"Infinity"` is explicitly parseable for the coercion, but any other casing, including `"infinity"`, will fail, again producing `NaN`.
+
+## Type Awareness
 
 // TODO
 
@@ -588,6 +1152,8 @@ Nevertheless, as I mentioned at the start of this chapter, Brendan Eich endorses
 [^AbstractOperations]: "7.1 Type Conversion", ECMAScript 2022 Language Specification; https://262.ecma-international.org/13.0/#sec-type-conversion ; Accessed August 2022
 
 [^ToBoolean]: "7.1.2 ToBoolean(argument)", ECMAScript 2022 Language Specification; https://262.ecma-international.org/13.0/#sec-toboolean ; Accessed August 2022
+
+[^ExoticFalsyObjects]: "B.3.6 The [[IsHTMLDDA]] Internal Slot", ECMAScript 2022 Language Specification; https://262.ecma-international.org/13.0/#sec-IsHTMLDDA-internal-slot ; Accessed August 2022
 
 [^OrdinaryToPrimitive]: "7.1.1.1 OrdinaryToPrimitive(O,hint)", ECMAScript 2022 Language Specification; https://262.ecma-international.org/13.0/#sec-ordinarytoprimitive ; Accessed August 2022
 
